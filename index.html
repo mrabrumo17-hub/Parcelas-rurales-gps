@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#24583b">
+<title>Parcelas Rurales GPS</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+<style>
+:root{--green:#24583b;--bg:#f4f6f2;--line:#d7ded5}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:#17231b}
+header{background:var(--green);color:white;padding:18px 16px;padding-top:calc(18px + env(safe-area-inset-top))}
+header h1{font-size:21px;margin:0 0 5px}header p{margin:0;font-size:13px;opacity:.9}
+main{max-width:850px;margin:auto;padding:12px;display:grid;gap:12px}
+.card{background:white;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 2px 8px #17231b0a}
+h2{font-size:17px;margin:0 0 12px}.help{font-size:13px;color:#526057;line-height:1.4}
+#map{height:370px;border-radius:10px;overflow:hidden;background:#e5e9e1}
+label{display:block;font-size:13px;font-weight:650;margin:10px 0 5px}
+input,textarea{width:100%;font:inherit;padding:11px;border:1px solid #cbd4cb;border-radius:9px;background:#fff}
+textarea{min-height:70px;resize:vertical}
+button,.filebutton{border:0;border-radius:10px;padding:12px 14px;font:inherit;font-weight:650;background:var(--green);color:#fff;cursor:pointer}
+button.secondary{background:#e8eee8;color:#1b3827}button.danger{background:#9d3027}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.actions button{flex:1}
+.stats{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.pill{background:#edf3ed;border-radius:999px;padding:7px 10px;font-size:13px}
+.parcel{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:8px}.parcel h3{font-size:15px;margin:0 0 5px}.parcel p{font-size:13px;color:#526057;margin:4px 0}
+.parcel img{max-width:100%;max-height:180px;object-fit:cover;border-radius:8px;margin-top:8px}
+small{color:#5a675d}.status{font-size:13px;margin-top:8px;min-height:18px}
+footer{font-size:12px;color:#5b665d;padding:0 14px 24px;line-height:1.45}
+</style>
+</head>
+<body>
+<header><h1>Parcelas Rurales GPS</h1><p>Registro de parcelas, límites, superficie, fotos y propietario</p></header>
+<main>
+<section class="card">
+<h2>1. Marcar los límites en el mapa</h2>
+<p class="help">Usá el botón de polígono del mapa para marcar los vértices del terreno. También podés ubicar tu posición con GPS. El GPS del teléfono requiere permiso y, normalmente, una página HTTPS.</p>
+<div id="map"></div>
+<div class="stats"><span class="pill" id="area">Superficie: —</span><span class="pill" id="points">Vértices: 0</span></div>
+<div class="actions"><button id="gps">📍 Ir a mi ubicación</button><button id="clear" class="secondary">Borrar límites</button></div>
+<div class="status" id="mapstatus" role="status"></div>
+</section>
+<section class="card">
+<h2>2. Datos de la parcela</h2>
+<label for="parcelname">Nombre o código de parcela *</label><input id="parcelname" placeholder="Ej. Parcela Norte 01" maxlength="100">
+<label for="owner">Propietario / productor</label><input id="owner" placeholder="Nombre del propietario" maxlength="150">
+<label for="notes">Observaciones (opcional)</label><textarea id="notes" placeholder="Cultivo, alambrados, referencias..."></textarea>
+<label for="photos">Fotografías</label><input id="photos" type="file" accept="image/*" capture="environment" multiple>
+<p class="help">Las fotos se guardan en este navegador en esta versión de prueba. Elegí pocas fotos y de tamaño moderado.</p>
+<div class="actions"><button id="save">Guardar parcela en este dispositivo</button></div>
+<div class="status" id="savestatus" role="status"></div>
+</section>
+<section class="card">
+<h2>3. Parcelas guardadas</h2>
+<p class="help">Esta versión guarda los datos en el almacenamiento del navegador de este iPhone. Todavía no sincroniza con otros dispositivos ni con una base de datos online.</p>
+<div class="actions"><button id="export">Exportar copia de seguridad (JSON)</button><button id="importbtn" class="secondary">Importar copia</button><input id="importfile" type="file" accept="application/json" hidden></div>
+<div id="list"></div>
+</section>
+</main>
+<footer>Importante: es una herramienta de registro preliminar, no un levantamiento catastral ni una mensura legal. La precisión depende del GPS, el dispositivo y las condiciones del terreno. Verificá límites y superficies con un profesional habilitado cuando tengan efectos legales.</footer>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const map=L.map('map').setView([-35.6,-62.9],10);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const drawn=new L.FeatureGroup();map.addLayer(drawn);
+let activePolygon=null, currentArea=0;
+const fmt=n=>new Intl.NumberFormat('es-AR',{maximumFractionDigits:3}).format(n);
+function polygonAreaM2(latlngs){
+ const R=6378137, pts=latlngs.map(p=>[p.lat*Math.PI/180,p.lng*Math.PI/180]);let sum=0;
+ for(let i=0;i<pts.length;i++){let a=pts[i],b=pts[(i+1)%pts.length];sum+=(b[1]-a[1])*(2+Math.sin(a[0])+Math.sin(b[0]));}
+ return Math.abs(sum*R*R/2);
+}
+function updateArea(){
+ const layers=drawn.getLayers();activePolygon=layers.length?layers[layers.length-1]:null;
+ currentArea=activePolygon?polygonAreaM2(activePolygon.getLatLngs()[0]):0;
+ $('area').textContent='Superficie: '+(activePolygon?fmt(currentArea/10000)+' ha ('+fmt(currentArea)+' m²)':'—');
+ $('points').textContent='Vértices: '+(activePolygon?activePolygon.getLatLngs()[0].length:0);
+}
+map.addControl(new L.Control.Draw({draw:{polygon:{allowIntersection:false,showArea:true},polyline:false,rectangle:false,circle:false,circlemarker:false,marker:false},edit:{featureGroup:drawn,remove:true}}));
+map.on(L.Draw.Event.CREATED,e=>{drawn.clearLayers();drawn.addLayer(e.layer);updateArea();$('mapstatus').textContent='Límites marcados. Revisá que el polígono siga el perímetro correcto.';});
+map.on(L.Draw.Event.EDITED,updateArea);map.on(L.Draw.Event.DELETED,updateArea);
+$('gps').onclick=()=>{if(!navigator.geolocation){$('mapstatus').textContent='Este navegador no ofrece geolocalización.';return}
+ $('mapstatus').textContent='Buscando ubicación…';navigator.geolocation.getCurrentPosition(pos=>{const ll=[pos.coords.latitude,pos.coords.longitude];map.setView(ll,17);L.circleMarker(ll,{radius:8,color:'#fff',weight:3,fillColor:'#1769aa',fillOpacity:1}).addTo(map).bindPopup('Tu ubicación aproximada');$('mapstatus').textContent='Ubicación obtenida. Precisión estimada: '+Math.round(pos.coords.accuracy)+' m.';},err=>{$('mapstatus').textContent='No se pudo obtener GPS. Revisá permisos y conexión.';},{enableHighAccuracy:true,timeout:15000,maximumAge:5000});};
+$('clear').onclick=()=>{drawn.clearLayers();updateArea();$('mapstatus').textContent='Límites borrados.'};
+function getParcels(){try{return JSON.parse(localStorage.getItem('ruralParcels')||'[]')}catch{return []}}
+function putParcels(a){localStorage.setItem('ruralParcels',JSON.stringify(a))}
+function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function render(){
+ const arr=getParcels();$('list').innerHTML=arr.length?'':'<p class="help">Todavía no hay parcelas guardadas.</p>';
+ arr.slice().reverse().forEach(p=>{const d=document.createElement('article');d.className='parcel';
+ d.innerHTML='<h3>'+escapeHtml(p.name)+'</h3><p><b>Propietario:</b> '+escapeHtml(p.owner||'No indicado')+'</p><p><b>Superficie registrada:</b> '+fmt(p.area/10000)+' ha ('+fmt(p.area)+' m²)</p><p><b>Fecha:</b> '+escapeHtml(p.date)+'</p><p>'+escapeHtml(p.notes||'')+'</p>';
+ (p.photos||[]).forEach(src=>{const im=document.createElement('img');im.src=src;im.alt='Foto de '+p.name;d.appendChild(im)});
+ const b=document.createElement('button');b.className='danger';b.textContent='Eliminar';b.onclick=()=>{if(confirm('¿Eliminar esta parcela de este dispositivo?')){putParcels(getParcels().filter(x=>x.id!==p.id));render()}};d.appendChild(b);$('list').appendChild(d);
+ });
+}
+$('save').onclick=async()=>{
+ const name=$('parcelname').value.trim();if(!name){$('savestatus').textContent='Ingresá un nombre o código de parcela.';return}
+ if(!activePolygon){$('savestatus').textContent='Primero marcá los límites en el mapa.';return}
+ const files=Array.from($('photos').files||[]);if(files.length>4){$('savestatus').textContent='Para esta prueba, cargá como máximo 4 fotos por parcela.';return}
+ try{
+ const photos=await Promise.all(files.map(f=>new Promise((resolve,reject)=>{if(f.size>1200000){reject(new Error('Cada foto debe pesar menos de 1,2 MB en esta versión de prueba.'));return}const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(f)})));
+ const coords=activePolygon.getLatLngs()[0].map(p=>[p.lat,p.lng]);
+ const parcel={id:Date.now().toString(),name,owner:$('owner').value.trim(),notes:$('notes').value.trim(),area:currentArea,coords,photos,date:new Date().toLocaleString('es-AR')};
+ const arr=getParcels();arr.push(parcel);putParcels(arr);render();$('savestatus').textContent='Parcela guardada en este iPhone.';$('parcelname').value='';$('owner').value='';$('notes').value='';$('photos').value='';
+ }catch(e){$('savestatus').textContent=e.message||'No se pudo guardar. Probá con menos fotos.'}
+};
+$('export').onclick=()=>{const blob=new Blob([JSON.stringify(getParcels(),null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='parcelas-rurales-copia.json';a.click();URL.revokeObjectURL(url)};
+$('importbtn').onclick=()=>$('importfile').click();
+$('importfile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const data=JSON.parse(await f.text());if(!Array.isArray(data))throw Error();putParcels(data);render();$('savestatus').textContent='Copia importada.'}catch{$('savestatus').textContent='El archivo no es una copia válida.'}};
+render();
+</script>
+</body></html>
